@@ -23,8 +23,11 @@ var/
 # Logs
 *.log
 
-# Config
+# Local config and data files
 config.ini
+last_resource.txt
+processed_links.txt
+last_position.txt
 
 # Virtual Environment
 venv/
