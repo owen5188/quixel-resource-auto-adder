@@ -1,14 +1,11 @@
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, NoSuchElementException
-import time
+from DrissionPage import ChromiumPage
+from DrissionPage import ChromiumOptions
 import logging
 import configparser
 import os
 import sys
 import platform
+import time
 
 # 设置日志
 logging.basicConfig(
@@ -24,11 +21,14 @@ logger = logging.getLogger(__name__)
 
 class QuixelResourceAdder:
     def __init__(self):
-        self.driver = None
-        self.wait = None
+        self.page = None
         self.config = self.load_config()
-        self.system = platform.system()  # 获取操作系统类型
-        self.setup_driver()
+        self.system = platform.system()
+        self.processed_links_file = 'processed_links.txt'
+        self.last_resource_file = 'last_resource.txt'
+        self.processed_links = set()
+        self.resource_list_url = "https://www.fab.com/zh-cn/search?free=true"
+        self.setup_page()
 
     def load_config(self):
         """加载配置文件"""
@@ -41,7 +41,8 @@ class QuixelResourceAdder:
         config.read('config.ini', encoding='utf-8')
         return config
 
-    def create_default_config(self):
+    @staticmethod
+    def create_default_config():
         """创建默认配置文件"""
         config = configparser.ConfigParser()
         config['Chrome'] = {
@@ -90,236 +91,243 @@ class QuixelResourceAdder:
             with open('config.ini', 'w', encoding='utf-8') as f:
                 self.config.write(f)
 
-        return os.path.expanduser(user_data_dir)  # 展开用户目录的波浪号
+        return os.path.expanduser(user_data_dir)
 
-    def setup_driver(self):
-        """设置浏览器驱动"""
+    def setup_page(self):
+        """设置页面"""
         try:
-            # 添加版本信息日志
             logger.info(f"操作系统: {self.system}")
             logger.info(f"Python版本: {sys.version}")
 
-            options = uc.ChromeOptions()
-            options.add_argument('--window-size=1280,720')
-            options.add_argument('--window-position=600,300')
-
             user_data_dir = self.get_chrome_user_data_dir()
-
             if not os.path.exists(user_data_dir):
                 raise Exception(f"Chrome用户数据目录不存在: {user_data_dir}")
 
-            logger.info(f"使用Chrome用户数据目录: {user_data_dir}")
-            options.add_argument(f'--user-data-dir={user_data_dir}')
-            options.add_argument('--profile-directory=Default')
-
-            self.driver = uc.Chrome(options=options)
-            self.wait = WebDriverWait(self.driver, 20)
-
-            # 添加Chrome版本信息日志
-            chrome_version = self.driver.capabilities['browserVersion']
-            logger.info(f"Chrome版本: {chrome_version}")
-            logger.info("浏览器驱动初始化成功")
+            logger.info(f"使用Chrome用户数据: {user_data_dir}")
+            
+            # 创建配置
+            co = ChromiumOptions()
+            co.set_paths(user_data_path=user_data_dir)
+            
+            # 使用配置创建页面
+            self.page = ChromiumPage(co)
+            logger.info("浏览器初始化成功")
 
             print("\n" + "=" * 50)
-            print("提示：您可以移动或最小化浏览器窗口")
+            print("提示：正在检测您的登录状态，如您已登录Fab，")
+            print("您可以移动或最小化浏览器窗口")
             print("脚本会在后台继续运行")
+            print("如未登录，请按下面的提示登录")
             print("=" * 50 + "\n")
 
         except Exception as e:
-            logger.error(f"驱动初始化失败: {str(e)}")
-            if self.driver:
-                self.driver.quit()
+            logger.error(f"初始化失败: {str(e)}")
+            if self.page:
+                self.page.quit()
             raise
 
-    def wait_for_manual_login(self):
-        """等待人工登录"""
+    def save_last_resource(self, resource_info):
+        """保存最后处理的资源信息"""
         try:
-            logger.info("请在浏览器中手动登录...")
+            with open(self.last_resource_file, 'w', encoding='utf-8') as f:
+                f.write(resource_info)
+        except Exception as e:
+            logger.error(f"保存资源信息时出错: {str(e)}")
 
-            # 打开登录页面
-            self.driver.get("https://www.fab.com/zh-cn/sellers/Quixel")
+    def load_last_resource(self):
+        """加载上次处理的资源信息"""
+        try:
+            if os.path.exists(self.last_resource_file):
+                with open(self.last_resource_file, 'r', encoding='utf-8') as f:
+                    return f.read().strip()
+            return None
+        except Exception as e:
+            logger.error(f"加载资源信息时出错: {str(e)}")
+            return None
 
-            # 提示用户操作
-            print("\n" + "=" * 50)
-            print("请在打开的浏览器中完成以下操作：")
-            print("1. 手动登录您的账号")
-            print("2. 确保成功登录到 Quixel 页面")
-            print("3. 登录成功后，请返回命令行按回车键继续")
-            print("=" * 50 + "\n")
+    def load_processed_links(self):
+        """加载已处理的链接"""
+        try:
+            if os.path.exists(self.processed_links_file):
+                with open(self.processed_links_file, 'r', encoding='utf-8') as f:
+                    return set(line.strip() for line in f if line.strip())
+            return set()
+        except Exception as e:
+            logger.error(f"加载已处理链接时出错: {str(e)}")
+            return set()
 
-            input("请在完成登录后按回车键继续...")
+    def save_processed_link(self, link):
+        """保存已处理的链接"""
+        try:
+            with open(self.processed_links_file, 'a', encoding='utf-8') as f:
+                f.write(f"{link}\n")
+        except Exception as e:
+            logger.error(f"保存已处理链接时出错: {str(e)}")
 
-            # 等待登录成功
-            time.sleep(3)
+    def check_login_status(self):
+        """检查登录状态"""
+        try:
+            # 访问 Quixel 页面
+            self.page.get("https://www.fab.com/zh-cn/sellers/Quixel")
+            time.sleep(2)
 
-            logger.info("继续执行自动化操作...")
+            # 检查是否存在登录按钮
+            login_button = self.page.ele(
+                'xpath://button[contains(@class, "fabkit-Avatar-root") and @aria-label="登录"]'
+            )
+            
+            if login_button:
+                logger.info("检测到未登录状态，请先登录")
+                print("\n" + "=" * 50)
+                print("请在浏览器中完成以下操作：")
+                print("1. 点击右上角的登录按钮")
+                print("2. 使用您的账号登录")
+                print("3. 确保成功登录到 Quixel 页面")
+                print("4. 登录成功后，请返回命令行按回车键继续")
+                print("=" * 50 + "\n")
+                input("请在完成登录后按回车键继续...")
+                
+                # 刷新页面并再次检查登录状态
+                self.page.get("https://www.fab.com/zh-cn/sellers/Quixel")
+                time.sleep(2)
+                if self.page.ele(
+                    'xpath://button[contains(@class, "fabkit-Avatar-root") and @aria-label="登录"]'
+                ):
+                    raise Exception("登录失败，请确保成功登录后再运行程序")
+                
+                logger.info("登录状态确认成功")
+                return True
+            
+            logger.info("已检测到登录状态")
             return True
 
         except Exception as e:
-            logger.error(f"等待登录过程中发生错误: {str(e)}")
+            logger.error(f"检查登录状态时出错: {str(e)}")
             raise
-
-    def scroll_page(self, amount):
-        """模拟人工拖动滚动条"""
-        try:
-            # 获取当前滚动位置
-            current_position = int(self.driver.execute_script("return window.pageYOffset;"))
-            target_position = current_position + amount
-
-            # 获取页面总高度
-            total_height = int(self.driver.execute_script(
-                "return Math.max(document.body.scrollHeight, document.body.offsetHeight, "
-                "document.documentElement.clientHeight, document.documentElement.scrollHeight, "
-                "document.documentElement.offsetHeight);"
-            ))
-
-            # 确保不会滚动超过页面总高度
-            target_position = min(target_position, total_height - 800)
-
-            # 模拟平滑滚动，每次滚动一小段距离
-            step = 100 if amount > 0 else -100
-            for pos in range(current_position, target_position, step):
-                self.driver.execute_script(f"window.scrollTo(0, {int(pos)});")
-                time.sleep(0.05)
-
-            # 最后滚动到目标位置
-            self.driver.execute_script(f"window.scrollTo(0, {int(target_position)});")
-            time.sleep(1)
-
-            # 返回实际滚动位置
-            return int(self.driver.execute_script("return window.pageYOffset;"))
-
-        except Exception as e:
-            logger.error(f"滚动页面时出错: {str(e)}")
-            return current_position  # 返回当前位置而不是 None
 
     def add_resources_to_library(self):
         """添加所有资源到库中"""
-        processed_links = set()  # 用于存储已处理的链接
-        scroll_position = 0  # 记录当前滚动位置
-        no_new_resources_count = 0  # 连续没有新资源的次数
+        try:
+            if not self.check_login_status():
+                return
 
-        while True:
-            try:
-                # 确保在正确的面上
-                if "fab.com/zh-cn/sellers/Quixel" not in self.driver.current_url:
-                    self.driver.get("https://www.fab.com/zh-cn/sellers/Quixel")
-                    scroll_position = 0  # 重置滚动位置
+            # 加载已处理的链接
+            self.processed_links = self.load_processed_links()
+            
+            # 确保访问正确的资源列表页面
+            self.resource_list_url = "https://www.fab.com/zh-cn/sellers/Quixel"
+            
+            last_height = 0
+            pending_resources = set()  # 使用set避免重复
+            no_new_height_count = 0
+            
+            while True:
+                try:
+                    # 确保在正确的页面上
+                    current_url = self.page.url
+                    if "fab.com/zh-cn/sellers/Quixel" not in current_url:
+                        logger.info("页面已改变，重新导航到资源列表页...")
+                        self.page.get(self.resource_list_url)
+                        time.sleep(3)
+                    
+                    # 获取当前页面高度
+                    current_height = self.page.run_js('return document.documentElement.scrollHeight')
+                    
+                    # 获取并处理免费资源
+                    free_resources = self.page.eles(
+                        'xpath://div[text()="免费"]/ancestor::li//a[contains(@href, "/listings/")]'
+                    )
+                    
+                    current_resources_count = len(free_resources)
+                    logger.info(f"当前页面上共有 {current_resources_count} 个免费资源")
 
-                # 等待资源列表加载完成
-                self.wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, "ul li"))
-                )
-                time.sleep(2)
+                    # 收集未添加的资源URL
+                    for element in free_resources:
+                        link = element.link
+                        if (link and 
+                            link not in self.processed_links and
+                            link not in pending_resources):
+                            
+                            pending_resources.add(link)
+                            logger.info(f"找到未添加的资源: {link}")
 
-                # 恢复到之前的滚动位置
-                if scroll_position > 0:
-                    self.scroll_page(scroll_position)
+                    # 处理收集到的资源
+                    if pending_resources:
+                        resources_to_process = list(pending_resources)[:20]
+                        logger.info(f"开始处理 {len(resources_to_process)} 个新资源...")
+                        
+                        for resource_url in resources_to_process:
+                            try:
+                                self.page.get(resource_url)
+                                time.sleep(2)
+                                
+                                add_button = self.page.ele('css:button.fabkit-Button--secondary.fabkit-Button--fullWidth._A6MYYt2')
+                                
+                                if add_button:
+                                    add_button.click()
+                                    time.sleep(1)
+                                    self.processed_links.add(resource_url)
+                                    self.save_processed_link(resource_url)
+                                    pending_resources.remove(resource_url)
+                                    logger.info(f"已添加资源: {resource_url}")
+                                else:
+                                    logger.error(f"未找到添加按钮: {resource_url}")
+                                    pending_resources.remove(resource_url)  # 移除无法添加的资源
+                                    
+                            except Exception as e:
+                                logger.error(f"添加资源失败: {resource_url}, 错误: {str(e)}")
+                        
+                        # 返回资源列表页
+                        self.page.get(self.resource_list_url)
+                        time.sleep(3)
+
+                    # 滚动页面
+                    self.page.run_js('window.scrollTo(0, document.documentElement.scrollHeight)')
                     time.sleep(2)
 
-                # 查找当前可见区域内带有"免费"标记的资源卡片
-                free_resources = self.driver.find_elements(
-                    By.XPATH,
-                    "//div[contains(@class, 'fabkit-Typography-root') and contains(text(), '免费')]"
-                    "/ancestor::li//a[contains(@href, '/listings/')]"
-                )
-
-                # 获取未处理的资源链接
-                new_links = []
-                for element in free_resources:
-                    try:
-                        link = element.get_attribute("href")
-                        # 确保链接有效��未处理过
-                        if link and link not in processed_links:
-                            new_links.append(link)
-                            processed_links.add(link)  # 立即标记为已处理，避免重复添加
-                    except:
-                        continue
-
-                logger.info(f"找到 {len(new_links)} 个未处理的免费资源")
-
-                # 如果找到未处理的资源，先处理它们
-                if len(new_links) > 0:
-                    # 处理每个免费资源
-                    for link in new_links:
-                        try:
-                            logger.info(f"正在处理资源: {link}")
-
-                            # 访问资源详情页
-                            self.driver.get(link)
-                            time.sleep(2)
-
-                            # 查找并点击"添加到我的库"按钮
-                            add_button = self.wait.until(
-                                EC.element_to_be_clickable((
-                                    By.XPATH,
-                                    "//button[contains(@class, 'fabkit-Button-root')]//span[contains(@class, 'fabkit-Button-label') and text()='添加到我的库']/.."
-                                ))
-                            )
-
-                            # 滚动到按钮可见
-                            self.driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", add_button)
-                            time.sleep(1)
-
-                            # 点击按钮
-                            add_button.click()
-                            logger.info("点击了添加到库按钮")
-                            time.sleep(2)
-
-                            # 返回列表页并恢复滚动位置
-                            self.driver.get("https://www.fab.com/zh-cn/sellers/Quixel")
-                            time.sleep(3)
-                            self.driver.execute_script(f"window.scrollTo(0, {scroll_position});")
-                            time.sleep(2)
-
-                            logger.info(f"成功添加资源: {link}")
-
-                        except Exception as e:
-                            logger.error(f"处理资源时出错: {str(e)}")
-                            continue
-
-                    no_new_resources_count = 0  # 重置计数器
-
-                else:
-                    # 如果当前视图没有未处理的资源，则滚动页面
-                    no_new_resources_count += 1
-                    if no_new_resources_count >= 5:  # 连续5次没有新资源
-                        # 尝试大范围滚动
-                        new_position = self.scroll_page(3000)
-                        if new_position is not None and new_position > scroll_position:
-                            scroll_position = new_position
-                            no_new_resources_count = 0
-                        else:
-                            logger.info("连续多次未发现新资源，任务完成")
-                            break
+                    # 检查页面高度是否变化
+                    if current_height > last_height:
+                        logger.info(f"页面高度增加: {current_height - last_height}px")
+                        last_height = current_height
+                        no_new_height_count = 0
                     else:
-                        # 正常滚动
-                        new_position = self.scroll_page(1500)
-                        if new_position is not None:
-                            scroll_position = new_position
-                        time.sleep(2)  # 等待新内容加载
+                        no_new_height_count += 1
+                        logger.info(f"页面高度未变化 ({no_new_height_count}/5)")
+                        
+                        if no_new_height_count >= 5:
+                            logger.info("尝试更大范围的滚动...")
+                            self.page.run_js('window.scrollTo(0, document.documentElement.scrollHeight * 2)')
+                            time.sleep(3)
+                            
+                            new_height = self.page.run_js('return document.documentElement.scrollHeight')
+                            if new_height > current_height:
+                                logger.info("检测到新内容，继续处理")
+                                no_new_height_count = 0
+                                continue
+                            elif pending_resources:
+                                logger.info(f"处理剩余的 {len(pending_resources)} 个资源...")
+                                continue
 
-            except Exception as e:
-                logger.error(f"处理页面时发生错误: {str(e)}")
-                time.sleep(3)
-                continue
+                except Exception as e:
+                    logger.error(f"处理页面时发生错误: {str(e)}")
+                    time.sleep(1)
+                    continue
+
+        except Exception as e:
+            logger.error(f"处理页面时发生错误: {str(e)}")
 
     def close(self):
         """关闭浏览器"""
-        if self.driver:
-            self.driver.quit()
+        if self.page:
+            self.page.quit()
 
 
 def main():
     print("\n欢迎使用 Quixel 资源自动添加工具！\n")
+    adder = None
 
     try:
         adder = QuixelResourceAdder()
-
-        # 等待人工登录
-        adder.wait_for_manual_login()
-
-        # 开始添加资源
         adder.add_resources_to_library()
 
     except Exception as e:
